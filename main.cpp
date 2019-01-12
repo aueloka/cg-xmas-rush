@@ -48,11 +48,11 @@ struct Point {
         return "{ " + to_string(x) + ", " + to_string(y) + "}";
     }
 
-    bool operator==(const Point &other) {
+    bool operator==(const Point &other) const {
         return x == other.x && y == other.y;
     }
 
-    bool operator!=(const Point &other) {
+    bool operator!=(const Point &other) const {
         return !(x == other.x && y == other.y);
     }
 
@@ -388,6 +388,7 @@ struct AStarNode {
 
 struct AStarResult {
     vector<Direction> directions;
+    string stringDirections;
     bool reachedGoal{false};
     bool movedCloserToGoal{false};
     int finalDistanceToGoal{49};
@@ -399,13 +400,14 @@ public:
     AStarResult DoSearch(const string &map, const Point &start, const Point &goal) {
         AStarResult output;
         this->DoSearch(map, start, goal, output.directions, output.reachedGoal, output.movedCloserToGoal,
-                       output.finalDistanceToGoal, output.endPoint);
+                       output.finalDistanceToGoal, output.endPoint, output.stringDirections);
         return output;
     }
 
 private:
     void DoSearch(const string &map, const Point &start, const Point &goal, vector<Direction> &outDirections,
-                  bool &reachedGoal, bool &movedCloserToGoal, int &lastDistanceToGoal, Point &endPoint) const {
+                  bool &reachedGoal, bool &movedCloserToGoal, int &lastDistanceToGoal, Point &endPoint,
+                  string &stringDirections) const {
 
         std::map<string, bool> visited;
 
@@ -416,7 +418,11 @@ private:
         movedCloserToGoal = false;
         outDirections = vector<Direction>();
 
-        AStarNode *currentNode = new AStarNode();
+        if (goal == Point(-1, -1) || goal == Point(-2, -2)) {
+            return;
+        }
+
+        auto *currentNode = new AStarNode();
         currentNode->point = start;
         currentNode->distanceToGoal = Distance::GetDistance(currentNode->point, goal);
 
@@ -447,7 +453,7 @@ private:
                 if (MapTile(currentTile, currentNode->point)
                         .IsConnectedToTile
                                 (MapTile(nextTile, nextPoint), movementDirection)) {
-                    AStarNode *newNode = new AStarNode();
+                    auto *newNode = new AStarNode();
                     newNode->point = nextPoint;
                     newNode->parent = currentNode;
                     newNode->direction = movementDirection;
@@ -470,11 +476,27 @@ private:
         movedCloserToGoal = true;
         while (currentNode->parent != nullptr && max > 0) {
             outDirections.push_back(currentNode->direction);
+            switch (currentNode->direction) {
+                case Direction::UP:
+                    stringDirections += "U";
+                    break;
+                case Direction::RIGHT:
+                    stringDirections += "R";
+                    break;
+                case Direction::DOWN:
+                    stringDirections += "D";
+                    break;
+                case Direction::LEFT:
+                    stringDirections += "L";
+                    break;
+            }
+
             currentNode = currentNode->parent;
             max--;
         }
 
         std::reverse(outDirections.begin(), outDirections.end());
+        std::reverse(stringDirections.begin(), stringDirections.end());
     }
 };
 //======================================================================================================================
@@ -505,7 +527,7 @@ class ExecutionMoveEvaluator : public IMoveEvaluator {
 private:
     const double completeQuestCoef = 1;
     const double exitPointsCoef = 0.7;
-    const double invalidMovementCoef = -1;
+    const double invalidMovementCoef = -2;
     const double proximityToQuestsCoef = 0.8;
     const double minimumMovementsCoef = 0.1;
 
@@ -517,10 +539,10 @@ public:
         vector<quest> playerQuests = gameState.quests.at(playerId);
 
         double score = 0;
-        for (int i = 0; i < move.size(); ++i) {
+        for (char i : move) {
             Direction direction = Direction::UP;
 
-            switch (move[i]) {
+            switch (i) {
                 case 'R' :
                     direction = Direction::RIGHT;
                     break;
@@ -529,6 +551,8 @@ public:
                     break;
                 case 'L' :
                     direction = Direction::LEFT;
+                    break;
+                default:
                     break;
             }
 
@@ -542,7 +566,7 @@ public:
                 score += 1 * invalidMovementCoef;
             }
 
-            for (quest aQuest: playerQuests) {
+            for (const quest &aQuest: playerQuests) {
                 Item item = gameState.items.at(aQuest);
                 if (item.position == newPosition) {
                     score += 1 * completeQuestCoef;
@@ -554,11 +578,11 @@ public:
         }
 
         score += std::count(playerTile.begin(), playerTile.end(), '1') * exitPointsCoef;
-        score += 1 / move.size() * minimumMovementsCoef;
+        score += 1.0 / move.size() * minimumMovementsCoef;
 
-        for (quest aQuest: playerQuests) {
+        for (const quest &aQuest: playerQuests) {
             Item item = gameState.items.at(aQuest);
-            score += 1 / (Distance::GetDistance(item.position, playerPosition) + 1) * proximityToQuestsCoef;
+            score += 1.0 / (Distance::GetDistance(item.position, playerPosition) + 1) * proximityToQuestsCoef;
         }
 
         return score;
@@ -572,9 +596,11 @@ public:
 class GASolver {
 public:
     struct GAParams {
-        int populationSize{15};
-        int numberOfIterations{15};
-        double mutationProbability{0.5};
+        int populationSize{25};
+        int numberOfIterations{8};
+        double mutationRate{0};
+        double crossoverRate{0.95};
+        double crossoverAppendRate{0.5};
     };
 
 private:
@@ -584,30 +610,74 @@ private:
     const int playerId;
     const string directions = "URDL";
     GAParams params;
+    map<Gene, double> fitnessCache;
 
 public:
     GASolver(IMoveEvaluator *moveEvaluator, const GameState &gameState, const int playerId) :
             moveEvaluator(moveEvaluator), gameState(gameState), playerId(playerId) {}
 
     Gene Solve() {
-        cerr << "-----------------------------------------------------" << endl;
-        cerr << "Solving with Genetic Evolution..." << endl;
-        cerr << "Generating initial population..." << endl;
-
+        fitnessCache.clear();
         vector<Gene> population = GenerateSample(params.populationSize);
-        cerr << "Generated population. Size: " << population.size() << endl;
+
+        double bestScore = -30;
+        Gene bestGene;
+
         for (int i = 0; i < params.numberOfIterations; ++i) {
+            for (const auto &individual : population) {
+                double score = GetFitness(individual);
+                if (score > bestScore) {
+                    bestGene = individual;
+                    bestScore = score;
+                }
+            }
+
             population = Evolve(population);
         }
 
-        return population[0];
+        return bestGene;
     }
 
 private:
     vector<Gene> GenerateSample(int sampleSize) {
         vector<Gene> output;
+        output.reserve(sampleSize);
 
-        for (int i = 0; i < sampleSize; ++i) {
+        AStar aStar;
+        //Initialize with heuristic genes
+        for (const auto &aQuest: gameState.quests.at(playerId)) {
+            Item item = gameState.items.at(aQuest);
+            AStarResult aResult = aStar.DoSearch(gameState.map, gameState.playerPositions.at(playerId), item.position);
+            if (aResult.stringDirections.empty()) {
+                continue;
+            }
+
+            output.push_back(aResult.stringDirections);
+
+            if (!aResult.reachedGoal) {
+                continue;
+            }
+
+            //We reached goal.. Try reaching more quests
+            for (const auto &newQuest: gameState.quests.at(playerId)) {
+                if (newQuest == aQuest) {
+                    continue;
+                }
+
+                Item newItem = gameState.items.at(newQuest);
+                AStarResult newResult = aStar.DoSearch(gameState.map, item.position, newItem.position);
+                if (newResult.stringDirections.empty()) {
+                    continue;
+                }
+
+                output.push_back(newResult.stringDirections);
+                string newDirection = aResult.stringDirections + newResult.stringDirections;
+                output.push_back(newDirection);
+            }
+        }
+
+        //Fill up with random genes
+        while (output.size() < sampleSize) {
             output.push_back(GenerateGene());
         }
 
@@ -625,70 +695,133 @@ private:
     }
 
     vector<Gene> Evolve(vector<Gene> &currentGeneration) {
-        //Get fittest individuals
-        sort(currentGeneration.begin(), currentGeneration.end(), [this](Gene a, Gene b) {
-            return GetFitness(a) > GetFitness(b);
-        });
-
-        //Ditch unfit individuals
-        currentGeneration.resize(currentGeneration.size() / 2);
-
-        //Get new generation
         vector<Gene> newGeneration;
-        for (int i = 0; i < currentGeneration.size(); ++i) {
-            Gene parent = currentGeneration[i];
 
-            if (ShouldMutate()) {
-                newGeneration.push_back(Mutate(parent));
-            } else {
-                int mateIndex = rand() % currentGeneration.size();
-                // Avoid crossing same individuals
-                while (mateIndex == i) {
-                    mateIndex = rand() % currentGeneration.size();
-                }
-                Gene mate = currentGeneration[mateIndex];
-                newGeneration.push_back(Crossover(parent, mate));
+        while (newGeneration.size() < params.populationSize) {
+            Gene parentA = SelectCandidate(currentGeneration);
+            Gene parentB = SelectCandidate(currentGeneration);
+            Gene childA;
+            Gene childB;
+
+            TryCrossover(parentA, parentB, childA, childB);
+            TryMutate(childA);
+            TryMutate(childB);
+
+            newGeneration.push_back(childA);
+            newGeneration.push_back(childB);
+        }
+
+        return newGeneration;
+    }
+
+    Gene SelectCandidate(const vector<Gene> &currentGeneration) {
+        //Roulette selection
+        double totalFitness = 0;
+        double worstFitness = 1000;
+
+        for (const auto &gene : currentGeneration) {
+            double fitness = GetFitness(gene);
+            totalFitness += fitness;
+
+            if (fitness < worstFitness) {
+                worstFitness = fitness;
             }
         }
 
-        //Add new generation to population
-        currentGeneration.insert(std::end(currentGeneration), std::begin(newGeneration), std::end(newGeneration));
-        return currentGeneration;
+        //Normalize (Worst fitness should be zero)
+        double diff = 0 - worstFitness;
+        totalFitness += diff * currentGeneration.size();
+
+        int random = static_cast<int>(totalFitness) > 0 ? rand() % static_cast<int>(totalFitness) : 0;
+
+        for (const auto &individual : currentGeneration) {
+            double normalizedFitness = GetFitness(individual) + diff;
+            random -= static_cast<int>(normalizedFitness);
+
+            if (random < 0) {
+                return individual;
+            }
+        }
+
+        return currentGeneration[currentGeneration.size() - 1];
     }
 
-    double GetFitness(Gene individual) {
-        return moveEvaluator->Evaluate(gameState, individual, playerId);
+    double GetFitness(const Gene &individual) {
+        if (fitnessCache.find(individual) != fitnessCache.end()) {
+            return fitnessCache[individual];
+        }
+
+        double fitness = moveEvaluator->Evaluate(gameState, individual, playerId);
+        fitnessCache[individual] = fitness;
+        return fitness;
     }
 
     bool ShouldMutate() {
-        return ((double) rand() / (RAND_MAX)) < params.mutationProbability;
+        return ((double) rand() / (RAND_MAX)) < params.mutationRate;
     }
 
-    Gene Mutate(Gene individual) {
-        int mutationIndex = rand() % individual.size();
+    bool ShouldCrossover() {
+        return ((double) rand() / (RAND_MAX)) < params.crossoverRate;
+    }
 
-        char replacementChar = directions[rand() % (directions.size() - 1)];
+    bool ShouldAppendOnCrossover() {
+        return ((double) rand() / (RAND_MAX)) < params.crossoverAppendRate;
+    }
 
-        //Ensure replacement is different from current
-        while (individual[mutationIndex] == replacementChar) {
-            replacementChar = directions[rand() % (directions.size() - 1)];
+    Gene TryMutate(Gene individual) {
+        for (char &i : individual) {
+            if (!ShouldMutate()) {
+                continue;
+            }
+            
+            //Rotate clockwise
+            switch (i) {
+                case 'U':
+                    i = 'R';
+                    break;
+                case 'R':
+                    i = 'D';
+                    break;
+                case 'D':
+                    i = 'L';
+                    break;
+                case 'L':
+                    i = 'U';
+                    break;
+                default:
+                    break;
+            }
         }
 
-        string replacement = string(1, replacementChar);
-
-        Gene output = individual.replace(mutationIndex, 1, replacement);
-        return output;
-
+        return individual;
     }
 
-    Gene Crossover(Gene parentA, Gene parentB) {
-        const int &size = parentB.size() / 2;
-        Gene bReplacement = parentB.substr(size, size + 1);
+    void TryCrossover(const Gene &parentA, const Gene &parentB, Gene &childA, Gene &childB) {
+        childA = parentA;
+        childB = parentB;
 
-        parentA.resize(parentA.size() / 2);
-        parentA += bReplacement;
+        if (!ShouldCrossover()) {
+            return;
+        }
 
-        return parentA;
+        if (ShouldAppendOnCrossover()) {
+            childA = parentA + parentB;
+            childB = parentB + parentA;
+            return;
+        }
+
+        double crossoverIndex = ((double) rand() / (RAND_MAX));
+
+        int aaLen = static_cast<int>(parentA.size() * crossoverIndex);
+        int baStart = static_cast<int>(parentB.size() * crossoverIndex);
+        int baLen = static_cast<int>(parentB.size() - baStart);
+
+        int bbLen = baStart;
+        int abStart = aaLen;
+        int abLen = static_cast<int>(parentA.size() - abStart);
+
+        childA = parentA.substr(0, aaLen) + parentB.substr(baStart, baLen);
+        childB = parentB.substr(0, bbLen) + parentA.substr(abStart, abLen);
     }
 };
 
@@ -788,8 +921,8 @@ class GAMover : public IMover {
         GASolver solver(new ExecutionMoveEvaluator(), gameState, playerId);
         string directions = solver.Solve();
         vector<Direction> output;
-        for (int i = directions.size() - 1; i >= 0; --i) {
-            switch (directions[i]) {
+        for (char direction : directions) {
+            switch (direction) {
                 case 'U':
                     output.push_back(Direction::UP);
                     break;
@@ -801,6 +934,8 @@ class GAMover : public IMover {
                     break;
                 case 'L':
                     output.push_back(Direction::LEFT);
+                    break;
+                default:
                     break;
             }
         }
@@ -819,7 +954,7 @@ public:
 
 class GreedyEvaluator : public IEvaluator {
 private:
-    const double distanceToGoalCoef = 0.35;
+    const double distanceToGoalCoef = 0.0;
     const double existingPathToGoalCoef = 1;
     const double existingPathCloseToGoalCoef = 0.8;
     const double oppDistanceToGoalCoef = -0.3;
@@ -919,7 +1054,7 @@ public:
         }
 
         cout << "MOVE";
-        for (int i = 0; i < directions.size(); ++i) {
+        for (int i = 0; i < ((directions.size() < 20) ? directions.size() : 20); ++i) {
             Direction direction = directions[i];
             cout << " " << Dir::GetAsString(direction);
         }
@@ -934,8 +1069,8 @@ public:
 int main() {
 
 //    IMover *mover = new AStarMover();
-//    IMover *mover = new GAMover();
-    IMover *mover = new QuestBasedMover();
+    IMover *mover = new GAMover();
+//    IMover *mover = new QuestBasedMover();
     IPusher *pusher = new BruteForcePusher();
 
     // game loop
