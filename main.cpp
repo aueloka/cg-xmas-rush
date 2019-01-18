@@ -8,6 +8,8 @@
 #include <map>
 #include <ctime>
 
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "OCUnusedStructInspection"
 using namespace std;
 
 typedef pair<string, int> quest;
@@ -1148,7 +1150,7 @@ public:
                     bestSolution = {rowColId, direction};
                 }
 
-                if ((clock() - start)/(double)(CLOCKS_PER_SEC / 1000) > 137){
+                if ((clock() - start) / (CLOCKS_PER_SEC / 1000.0) > 137){
                     return bestSolution;
                 }
             }
@@ -1301,3 +1303,5 @@ int main() {
         }
     }
 }
+
+#pragma clang diagnostic pop
