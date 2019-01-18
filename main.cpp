@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <queue>
 #include <map>
+#include <ctime>
 
 using namespace std;
 
@@ -279,12 +280,14 @@ struct GameState {
     std::map<id, Point> playerPositions;
     std::map<id, string> playerTiles;
     std::map<quest, Item> items;
+    std::map<id, vector<Item>> playerItems;
     std::map<id, vector<quest>> quests;
 
     GameState Push(const int id, const Direction &direction, const int playerId) const {
         GameState newState;
         newState.playerTiles = playerTiles;
         newState.items = items;
+        newState.playerItems = playerItems;
         newState.quests = quests;
         newState.playerPositions = playerPositions;
 
@@ -694,7 +697,7 @@ private:
         return output;
     }
 
-    vector<Gene> Evolve(vector<Gene> &currentGeneration) {
+    vector<Gene> Evolve(const vector<Gene> &currentGeneration) {
         vector<Gene> newGeneration;
 
         while (newGeneration.size() < params.populationSize) {
@@ -773,7 +776,7 @@ private:
             if (!ShouldMutate()) {
                 continue;
             }
-            
+
             //Rotate clockwise
             switch (i) {
                 case 'U':
@@ -1005,6 +1008,107 @@ public:
     }
 };
 
+class GreedierEvaluator : public IEvaluator {
+private:
+    const double distanceToGoalCoef = 0.0;
+    const double existingPathToGoalCoef = 1;
+    const double existingPathCloseToGoalCoef = 0.8;
+    const double distanceToItemCoef = 0.0;
+    const double existingPathToItemCoef = 0.5;
+    const double existingPathCloseToItemCoef = 0.3;
+
+    const double oppDistanceToGoalCoef = -0.3;
+    const double oppExistingPathToGoalCoef = -0.9;
+    const double oppExistingPathCloseToGoalCoef = -0.85;
+    const double oppDistanceToItemCoef = -0.1;
+    const double oppExistingPathToItemCoef = -0.7;
+    const double oppExistingPathCloseToItemCoef = -0.65;
+
+public:
+    double Evaluate(const GameState &gameState, const int playerId) const override {
+        int oppId = playerId == 1 ? 0 : 1;
+
+        Point playerPosition = gameState.playerPositions.at(playerId);
+        Point oppPosition = gameState.playerPositions.at(oppId);
+
+        AStar aStar;
+        AStarResult aStarResult;
+        double score = 0;
+        double distanceScore;
+        double pathToGoalScore;
+        double closerToGoalScore;
+
+        for (const Item &item: gameState.playerItems.at(playerId)) {
+            Point playerQuestPosition = item.position;
+            aStarResult = aStar.DoSearch(gameState.map, playerPosition, playerQuestPosition);
+
+            if (gameState.items.find(quest(item.itemName, item.playerId)) != gameState.items.end()) {
+                //It's a quest
+                distanceScore =
+                        1.0 / (Distance::GetDistance(playerPosition, playerQuestPosition) + 0.000000001) *
+                        distanceToGoalCoef;
+                pathToGoalScore = (double) aStarResult.reachedGoal * existingPathToGoalCoef;
+                closerToGoalScore = 1.0 / (aStarResult.finalDistanceToGoal + 0.000000001) * existingPathCloseToGoalCoef;
+            } else {
+                //It's not a quest
+                distanceScore =
+                        1.0 / (Distance::GetDistance(playerPosition, playerQuestPosition) + 0.000000001) *
+                        distanceToItemCoef;
+                pathToGoalScore = (double) aStarResult.reachedGoal * existingPathToItemCoef;
+                closerToGoalScore = 1.0 / (aStarResult.finalDistanceToGoal + 0.000000001) * existingPathCloseToItemCoef;
+            }
+
+            score += distanceScore;
+            score += pathToGoalScore;
+            score += closerToGoalScore;
+        }
+
+//        for (const Item &item: gameState.playerItems.at(oppId)) {
+//            Point oppQuestPosition = item.position;
+//            aStarResult = aStar.DoSearch(gameState.map, oppPosition, oppQuestPosition);
+//            if (gameState.items.find(quest(item.itemName, item.playerId)) != gameState.items.end()) {
+//                //It's a quest
+//                distanceScore =
+//                        1.0 / (Distance::GetDistance(oppPosition, oppQuestPosition) + 0.000000001) *
+//                        oppDistanceToGoalCoef;
+//                pathToGoalScore = (double) aStarResult.reachedGoal * oppExistingPathToGoalCoef;
+//                closerToGoalScore =
+//                        1.0 / (aStarResult.finalDistanceToGoal + 0.000000001) * oppExistingPathCloseToGoalCoef;
+//            } else {
+//                continue;
+//                //It's not a quest
+//                distanceScore =
+//                        1.0 / (Distance::GetDistance(oppPosition, oppQuestPosition) + 0.000000001) *
+//                        oppDistanceToItemCoef;
+//                pathToGoalScore = (double) aStarResult.reachedGoal * oppExistingPathToItemCoef;
+//                closerToGoalScore =
+//                        1.0 / (aStarResult.finalDistanceToGoal + 0.000000001) * oppExistingPathCloseToItemCoef;
+//            }
+//            score += distanceScore;
+//            score += pathToGoalScore;
+//            score += closerToGoalScore;
+//        }
+
+        for (const quest &theQuest: gameState.quests.at(oppId)) {
+            Point oppQuestPosition = gameState.items.at(theQuest).position;
+            aStarResult = aStar.DoSearch(gameState.map, oppPosition, oppQuestPosition);
+            //It's a quest
+            distanceScore =
+                    1.0 / (Distance::GetDistance(oppPosition, oppQuestPosition) + 0.000000001) *
+                    oppDistanceToGoalCoef;
+            pathToGoalScore = (double) aStarResult.reachedGoal * oppExistingPathToGoalCoef;
+            closerToGoalScore =
+                    1.0 / (aStarResult.finalDistanceToGoal + 0.000000001) * oppExistingPathCloseToGoalCoef;
+
+            score += distanceScore;
+            score += pathToGoalScore;
+            score += closerToGoalScore;
+        }
+
+        return score;
+    }
+};
+
 //======================================================================================================================
 //  PUSH SOLUTION IMPLEMENTATION
 //======================================================================================================================
@@ -1013,12 +1117,24 @@ public:
     virtual pair<int, Direction> Push(const GameState &gameState, int playerId) const = 0;
 };
 
-class BruteForcePusher : public IPusher {
+class RandomPusher : public IPusher {
 public:
     pair<int, Direction> Push(const GameState &gameState, const int playerId) const override {
-        IEvaluator *evaluator = new GreedyEvaluator();
-        pair<int, Direction> bestSolution;
+        return {0, Direction::UP};
+    }
+};
+
+class BruteForcePusher : public IPusher {
+private:
+    IEvaluator *evaluator;
+public:
+
+    explicit BruteForcePusher(IEvaluator *evaluator) : evaluator(evaluator) {}
+
+    pair<int, Direction> Push(const GameState &gameState, const int playerId) const override {
+        pair<int, Direction> bestSolution(0, Direction::UP);
         double bestScore = 0;
+        clock_t start = clock();
 
         for (int rowColId = 0; rowColId < 7; ++rowColId) {
             for (auto direction: Dir::Directions) {
@@ -1026,9 +1142,14 @@ public:
 
                 double score = evaluator->Evaluate(pushedState, playerId);
 
+//                cerr << "PUSH " << rowColId << " " << Dir::GetAsString(direction) << ": " << score << endl;
                 if (score > bestScore) {
                     bestScore = score;
                     bestSolution = {rowColId, direction};
+                }
+
+                if ((clock() - start)/(double)(CLOCKS_PER_SEC / 1000) > 137){
+                    return bestSolution;
                 }
             }
         }
@@ -1071,8 +1192,11 @@ int main() {
 //    IMover *mover = new AStarMover();
     IMover *mover = new GAMover();
 //    IMover *mover = new QuestBasedMover();
-    IPusher *pusher = new BruteForcePusher();
 
+//        IEvaluator *evaluator = new GreedyEvaluator();
+    IEvaluator *evaluator = new GreedierEvaluator();
+    IPusher *pusher = new BruteForcePusher(evaluator);
+//    IPusher *pusher = new RandomPusher();
     // game loop
     while (true) {
         int turnType;
@@ -1109,11 +1233,9 @@ int main() {
             if (playerId == ACTOR_ID) {
                 actorPosition = Point(playerX, playerY);
                 actorTile = playerTile;
-                cerr << "Actor is at: " << actorPosition.toString() << "(" << actorTile << ")" << endl;
             } else {
                 villainPosition = Point(playerX, playerY);
                 villainTile = playerTile;
-                cerr << "Villain is at: " << villainPosition.toString() << "(" << villainTile << ")" << endl;
             }
         }
 
@@ -1133,9 +1255,16 @@ int main() {
             int itemY;
             int itemPlayerId;
             cin >> itemName >> itemX >> itemY >> itemPlayerId;
+            cin.ignore();
+
             const Item &item = Item(itemName, itemX, itemY, itemPlayerId);
             items[quest(itemName, itemPlayerId)] = item;
-            cin.ignore();
+
+            if (gameState.playerItems.find(itemPlayerId) == gameState.playerItems.end()) {
+                gameState.playerItems[itemPlayerId] = vector<Item>();
+            }
+
+            gameState.playerItems[itemPlayerId].push_back(item);
         }
 
         gameState.items = items;
